@@ -1,177 +1,203 @@
-// main.rs
-
+use clap::Parser;
 use std::process::{Command, Stdio};
 use std::str;
-use colored::*; // colored の Colorize トレイトをインポート
-
-// --- 型定義 ---
-pub type CommandResult<T> = Result<T, String>;
-pub type CommandHandler = fn(&[String]);
-
-pub struct CommandDefinition {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub handler: CommandHandler,
-}
-
-// --- 低レベルなGitコマンド実行ヘルパー ---
-fn execute_git_command_internal(args: &[&str], capture_stdout: bool, description: &str) -> CommandResult<String> {
-    let mut command = Command::new("git");
-    command.args(args);
-
-    let output_res = if capture_stdout {
-        command.stderr(Stdio::piped()).output() // stdout もデフォルトで piped される
-    } else {
-        command.stdout(Stdio::inherit()).stderr(Stdio::inherit()).output()
-    };
-
-    match output_res {
-        Ok(output) => {
-            if output.status.success() {
-                if capture_stdout {
-                    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-                } else {
-                    Ok(String::new()) // 成功時は空文字列で良い（run_interactive用）
-                }
-            } else {
-                let code = output.status.code().unwrap_or(-1);
-                let mut err_msg = format!("エラー: コマンド \"{}\" 失敗 (コード: {})", description, code);
-                if !output.stderr.is_empty() {
-                    err_msg.push_str(&format!("\nstderr:\n{}", String::from_utf8_lossy(&output.stderr).trim()));
-                }
-                // statusがsuccessでない場合のみstdoutをエラーに含める (capture_stdout時)
-                if capture_stdout && !output.stdout.is_empty() {
-                     err_msg.push_str(&format!("\nstdout:\n{}", String::from_utf8_lossy(&output.stdout).trim()));
-                }
-                Err(err_msg)
-            }
-        }
-        Err(e) => {
-            Err(format!("エラー: コマンド \"{}\" の実行に失敗しました。詳細: {}", description, e))
-        }
-    }
-}
-
-pub struct GitCommand;
-impl GitCommand {
-    fn run_interactive(args: &[&str], cmd_description: &str) -> CommandResult<()> {
-        execute_git_command_internal(args, false, cmd_description).map(|_| ())
-    }
-    fn run_stdout(args: &[&str], cmd_description: &str) -> CommandResult<String> {
-        execute_git_command_internal(args, true, cmd_description)
-    }
-    fn run_check_exit_code_zero(args: &[&str], cmd_description: &str) -> CommandResult<bool> {
-        match Command::new("git").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status() {
-            Ok(status) => Ok(status.success()),
-            Err(e) => Err(format!("コマンド \"{}\" の状態確認に失敗: {}", cmd_description, e)),
-        }
-    }
-
-    pub fn init() -> CommandResult<()> { Self::run_interactive(&["init"], "git init") }
-    pub fn remote_add(remote: &str, url: &str) -> CommandResult<()> { Self::run_interactive(&["remote", "add", remote, url], "git remote add") }
-    pub fn remote_set_url(remote: &str, url: &str) -> CommandResult<()> { Self::run_interactive(&["remote", "set-url", remote, url], "git remote set-url") }
-    pub fn remote_remove(remote: &str) -> CommandResult<()> { Self::run_interactive(&["remote", "remove", remote], "git remote remove")}
-    pub fn remote_get_url(remote: &str) -> CommandResult<String> { Self::run_stdout(&["remote", "get-url", remote], "git remote get-url") }
-    // pub fn remote_list_str() -> CommandResult<String> { Self::run_stdout(&["remote"], "git remote") }
-
-    pub fn add(files: &str) -> CommandResult<()> { Self::run_interactive(&["add", files], "git add") }
-    pub fn commit(message: &str) -> CommandResult<()> { Self::run_interactive(&["commit", "-m", message], "git commit") }
-    // pub fn push(remote: &str, branch: &str) -> CommandResult<()> { Self::run_interactive(&["push", remote, branch], "git push") }
-    pub fn push_u(remote: &str, branch: &str) -> CommandResult<()> { Self::run_interactive(&["push", "-u", remote, branch], "git push -u") }
-    pub fn push_delete(remote: &str, branch: &str) -> CommandResult<()> { Self::run_interactive(&["push", remote, "--delete", branch], "git push --delete") }
-    // pub fn push_ref_to_ref(remote: &str, source_and_dest_ref: &str) -> CommandResult<()> {
-    //     Self::run_interactive(&["push", remote, source_and_dest_ref], "git push <ref>:<ref>")
-    // }
-
-    pub fn branch_list_all_str() -> CommandResult<String> { Self::run_stdout(&["branch", "--all", "--no-color"], "git branch --all")}
-    pub fn branch_list_local_str() -> CommandResult<String> { Self::run_stdout(&["branch", "--no-color"], "git branch")}
-    pub fn branch_create_local(name: &str) -> CommandResult<()> { Self::run_interactive(&["branch", name], "git branch <name>") }
-    pub fn branch_create_local_from(name: &str, source: &str) -> CommandResult<()> { Self::run_interactive(&["branch", name, source], "git branch <name> <source>") }
-    pub fn branch_delete_local_d(branch: &str) -> CommandResult<()> { Self::run_interactive(&["branch", "-d", branch], "git branch -d") }
-
-    pub fn checkout(branch: &str) -> CommandResult<()> { Self::run_interactive(&["checkout", branch], "git checkout") }
-    pub fn checkout_b(branch: &str) -> CommandResult<()> { Self::run_interactive(&["checkout", "-b", branch], "git checkout -b") }
-
-    pub fn merge(branch: &str) -> CommandResult<bool> { Self::run_check_exit_code_zero(&["merge", branch], "git merge") }
-    pub fn pull(remote: &str, branch: &str) -> CommandResult<bool> {
-        Self::run_check_exit_code_zero(&["pull", remote, branch], "git pull (check)")
-    }
-
-    pub fn fetch_prune(remote: &str) -> CommandResult<()> { Self::run_interactive(&["fetch", remote, "--prune"], "git fetch --prune") }
-    
-    // fetch_silent は perform_startup_sync と共に削除
-
-    pub fn symbolic_ref_head() -> CommandResult<String> {
-        let result = Self::run_stdout(&["symbolic-ref", "--short", "-q", "HEAD"], "git symbolic-ref --short HEAD")?;
-        if result == "HEAD" { return Ok(String::new()); } // detached HEAD の場合は空を返す
-        Ok(result)
-    }
-    // pub fn config_get(key: &str) -> CommandResult<String> {
-    //     Self::run_stdout(&["config", key], &format!("git config {}", key))
-    // }
-    pub fn rev_parse_verify(ref_name: &str) -> CommandResult<bool> {
-        Self::run_check_exit_code_zero(&["rev-parse", "--verify", "--quiet", ref_name], "git rev-parse --verify")
-    }
-    pub fn rev_parse_commit_id(ref_name: &str) -> CommandResult<String> {
-        Self::run_stdout(&["rev-parse", ref_name], "git rev-parse")
-    }
-    pub fn status_porcelain_v1() -> CommandResult<String> {
-        Self::run_stdout(&["status", "--porcelain"], "git status --porcelain")
-    }
-    pub fn merge_base(commit1: &str, commit2: &str) -> CommandResult<String> {
-        Self::run_stdout(&["merge-base", commit1, commit2], "git merge-base")
-    }
-
-    pub fn show_branch_tree() -> CommandResult<String> {
-        Self::run_stdout(&["show-branch", "--list", "--topo-order"], "git show-branch --list --topo-order")
-    }
-}
-
-pub const COMMAND_DEFINITIONS: &[CommandDefinition] = &[
-    CommandDefinition { name: "save", description: "現在の変更を記録し、オプションでリモートに保存します。", handler: cmds::git_save },
-    CommandDefinition { name: "sa", description: "現在の変更を記録し、オプションでリモートに保存します。", handler: cmds::git_save },
-    CommandDefinition { name: "setup", description: "リポジトリの初期化とリモート('origin')の接続設定を行います。", handler: cmds::git_setup },
-    CommandDefinition { name: "se", description: "リポジトリの初期化とリモート('origin')の接続設定を行います。", handler: cmds::git_setup },
-    CommandDefinition { name: "branch", description: "ブランチの一覧を状態に応じて色分け表示します。", handler: cmds::git_branch },
-    CommandDefinition { name: "br", description: "ブランチの一覧を状態に応じて色分け表示します。", handler: cmds::git_branch },
-    CommandDefinition { name: "switch", description: "既存のローカルブランチに切り替えます。", handler: cmds::git_switch },
-    CommandDefinition { name: "sw", description: "既存のローカルブランチに切り替えます。", handler: cmds::git_switch },
-    CommandDefinition { name: "merge", description: "指定ブランチを現在のブランチにマージします。", handler: cmds::git_merge },
-    CommandDefinition { name: "me", description: "指定ブランチを現在のブランチにマージします。", handler: cmds::git_merge },
-    CommandDefinition { name: "copy", description: "ブランチをローカルにコピーし、オプションでリモートにプッシュします。", handler: cmds::git_copy },
-    CommandDefinition { name: "cp", description: "ブランチをローカルにコピーし、オプションでリモートにプッシュします。", handler: cmds::git_copy },
-    CommandDefinition { name: "delete", description: "ローカルおよびオプションでリモートブランチを削除します。", handler: cmds::git_delete },
-    CommandDefinition { name: "del", description: "ローカルおよびオプションでリモートブランチを削除します。", handler: cmds::git_delete },
-    CommandDefinition { name: "create", description: "新しいローカルブランチを作成し、オプションでリモートにプッシュします。", handler: cmds::git_create },
-    CommandDefinition { name: "cr", description: "新しいローカルブランチを作成し、オプションでリモートにプッシュします。", handler: cmds::git_create },
-    CommandDefinition { name: "tree", description: "ブランチの履歴をツリー形式で表示します。", handler: cmds::git_tree },
-    CommandDefinition { name: "tr", description: "ブランチの履歴をツリー形式で表示します。", handler: cmds::git_tree },
-    CommandDefinition { name: "help", description: "このヘルプメッセージを表示します。", handler: cmds::show_help },
-    CommandDefinition { name: "he", description: "このヘルプメッセージを表示します。", handler: cmds::show_help },
-];
+use crate::utils::GitCommandTrait;
 
 mod cmds;
 mod utils;
 
-// perform_startup_sync 関数は削除
+// --- Gitコマンド実行のコアロジック (変更点はanyhow::Result化) ---
+// CommandResult は anyhow::Result に置き換えられるため、グローバルな型エイリアスは不要になることが多い
+// pub type CommandResult<T> = Result<T, String>; // anyhow で代替
 
-fn main() {
-    // perform_startup_sync(); の呼び出しを削除
+pub struct GitCommand; // utils.rs の GitCommandTrait の実装はここで行う
+impl GitCommand {
+    fn execute_git_command_internal(args: &[&str], capture_stdout: bool, description: &str) -> anyhow::Result<String> {
+        let mut command = Command::new("git");
+        command.args(args);
 
-    let args: Vec<String> = std::env::args().collect();
-    let program_name = args.first().map_or("mygit", |s| s.as_str());
+        let output_res = if capture_stdout {
+            command.stderr(Stdio::piped()).output()
+        } else {
+            command.stdout(Stdio::inherit()).stderr(Stdio::inherit()).output()
+        };
 
-    if args.len() < 2 {
-        cmds::print_usage_and_exit(program_name, COMMAND_DEFINITIONS);
-        return;
+        match output_res {
+            Ok(output) => {
+                if output.status.success() {
+                    if capture_stdout {
+                        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                    } else {
+                        Ok(String::new())
+                    }
+                } else {
+                    let code = output.status.code().unwrap_or(-1);
+                    let mut err_msg_parts = vec![format!("エラー: コマンド \"{}\" 失敗 (コード: {})", description, code)];
+                    if !output.stderr.is_empty() {
+                        err_msg_parts.push(format!("stderr:\n{}", String::from_utf8_lossy(&output.stderr).trim()));
+                    }
+                    if capture_stdout && !output.stdout.is_empty() {
+                        err_msg_parts.push(format!("stdout:\n{}", String::from_utf8_lossy(&output.stdout).trim()));
+                    }
+                    anyhow::bail!(err_msg_parts.join("\n"))
+                }
+            }
+            Err(e) => Err(anyhow::Error::new(e).context(format!("コマンド \"{}\" の実行に失敗", description))),
+        }
     }
 
-    let command_name = args[1].as_str();
-
-    if let Some(cmd_def) = COMMAND_DEFINITIONS.iter().find(|cd| cd.name == command_name) {
-        (cmd_def.handler)(&args);
-    } else {
-        eprintln!("エラー: 不明なコマンド '{}'", command_name.red());
-        cmds::print_usage_and_exit(program_name, COMMAND_DEFINITIONS);
+    // --- GitCommand のヘルパーメソッド群 (戻り値を anyhow::Result に変更) ---
+    fn run_interactive(args: &[&str], cmd_description: &str) -> anyhow::Result<()> {
+        Self::execute_git_command_internal(args, false, cmd_description).map(|_| ())
     }
+    fn run_stdout(args: &[&str], cmd_description: &str) -> anyhow::Result<String> {
+        Self::execute_git_command_internal(args, true, cmd_description)
+    }
+    fn run_check_exit_code_zero(args: &[&str], cmd_description: &str) -> anyhow::Result<bool> {
+        match Command::new("git").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status() {
+            Ok(status) => Ok(status.success()),
+            Err(e) => Err(anyhow::Error::new(e).context(format!("コマンド \"{}\" の状態確認に失敗", cmd_description))),
+        }
+    }
+
+    // --- 各Git操作メソッド (戻り値を anyhow::Result に変更) ---
+    pub fn init() -> anyhow::Result<()> { Self::run_interactive(&["init"], "git init") }
+    pub fn remote_add(remote: &str, url: &str) -> anyhow::Result<()> { Self::run_interactive(&["remote", "add", remote, url], "git remote add") }
+    pub fn remote_set_url(remote: &str, url: &str) -> anyhow::Result<()> { Self::run_interactive(&["remote", "set-url", remote, url], "git remote set-url") }
+    pub fn remote_remove(remote: &str) -> anyhow::Result<()> { Self::run_interactive(&["remote", "remove", remote], "git remote remove")}
+    pub fn remote_get_url(remote: &str) -> anyhow::Result<String> { Self::run_stdout(&["remote", "get-url", remote], "git remote get-url") }
+    
+    pub fn add(files: &str) -> anyhow::Result<()> { Self::run_interactive(&["add", files], "git add") }
+    pub fn commit(message: &str) -> anyhow::Result<()> { Self::run_interactive(&["commit", "-m", message], "git commit") }
+    pub fn push_u(remote: &str, branch: &str) -> anyhow::Result<()> { Self::run_interactive(&["push", "-u", remote, branch], "git push -u") }
+    pub fn push_delete(remote: &str, branch: &str) -> anyhow::Result<()> { Self::run_interactive(&["push", remote, "--delete", branch], "git push --delete") }
+        
+    pub fn branch_list_all_str() -> anyhow::Result<String> { Self::run_stdout(&["branch", "--all", "--no-color"], "git branch --all")}
+    pub fn branch_list_local_str() -> anyhow::Result<String> { Self::run_stdout(&["branch", "--no-color"], "git branch")}
+    pub fn branch_create_local(name: &str) -> anyhow::Result<()> { Self::run_interactive(&["branch", name], "git branch <name>") }
+    pub fn branch_create_local_from(name: &str, source: &str) -> anyhow::Result<()> { Self::run_interactive(&["branch", name, source], "git branch <name> <source>") }
+    pub fn branch_delete_local_d(branch: &str) -> anyhow::Result<()> { Self::run_interactive(&["branch", "-d", branch], "git branch -d") }
+
+    pub fn checkout(branch: &str) -> anyhow::Result<()> { Self::run_interactive(&["checkout", branch], "git checkout") }
+    pub fn checkout_b(branch: &str) -> anyhow::Result<()> { Self::run_interactive(&["checkout", "-b", branch], "git checkout -b") }
+    
+    pub fn merge(branch: &str) -> anyhow::Result<bool> { Self::run_check_exit_code_zero(&["merge", branch], "git merge") }
+    pub fn pull(remote: &str, branch: &str) -> anyhow::Result<bool> { 
+        Self::run_check_exit_code_zero(&["pull", remote, branch], "git pull (check)")
+    }
+    pub fn fetch_prune(remote: &str) -> anyhow::Result<()> { Self::run_interactive(&["fetch", remote, "--prune"], "git fetch --prune") }
+    
+    pub fn symbolic_ref_head() -> anyhow::Result<String> {
+        let result = Self::run_stdout(&["symbolic-ref", "--short", "-q", "HEAD"], "git symbolic-ref --short HEAD")?;
+        if result == "HEAD" { return Ok(String::new()); }
+        Ok(result)
+    }
+    pub fn rev_parse_verify(ref_name: &str) -> anyhow::Result<bool> {
+        Self::run_check_exit_code_zero(&["rev-parse", "--verify", "--quiet", ref_name], "git rev-parse --verify")
+    }
+    pub fn rev_parse_commit_id(ref_name: &str) -> anyhow::Result<String> {
+        Self::run_stdout(&["rev-parse", ref_name], "git rev-parse")
+    }
+    pub fn status_porcelain_v1() -> anyhow::Result<String> {
+        Self::run_stdout(&["status", "--porcelain"], "git status --porcelain")
+    }
+    pub fn merge_base(commit1: &str, commit2: &str) -> anyhow::Result<String> {
+        Self::run_stdout(&["merge-base", commit1, commit2], "git merge-base")
+    }
+    pub fn show_branch_tree() -> anyhow::Result<String> {
+        Self::run_stdout(&["show-branch", "--list", "--topo-order"], "git show-branch --list --topo-order")
+    }
+}
+
+impl GitCommandTrait for GitCommand {
+    fn rev_parse_verify(&self, ref_name: &str) -> Result<bool, anyhow::Error> {
+        GitCommand::rev_parse_verify(ref_name)
+    }
+
+    fn rev_parse_commit_id(&self, ref_name: &str) -> Result<String, anyhow::Error> {
+        GitCommand::rev_parse_commit_id(ref_name)
+    }
+
+    fn merge_base(&self, commit1: &str, commit2: &str) -> Result<String, anyhow::Error> {
+        GitCommand::merge_base(commit1, commit2)
+    }
+
+    fn symbolic_ref_head(&self) -> Result<String, anyhow::Error> {
+        GitCommand::symbolic_ref_head()
+    }
+
+    fn checkout(&self, branch_name: &str) -> Result<(), anyhow::Error> {
+        GitCommand::checkout(branch_name)
+    }
+
+    fn checkout_b(&self, branch_name: &str) -> Result<(), anyhow::Error> {
+        GitCommand::checkout_b(branch_name)
+    }
+
+    fn push_u(&self, remote: &str, branch: &str) -> Result<(), anyhow::Error> {
+        GitCommand::push_u(remote, branch)
+    }
+
+    fn remote_get_url(&self, remote: &str) -> Result<String, anyhow::Error> {
+        GitCommand::remote_get_url(remote)
+    }
+}
+
+// --- clapによるコマンド定義 ---
+#[derive(Parser, Debug)]
+#[clap(author, version, about = "Git操作を簡略化する個人用CLIツール", long_about = None)]
+#[clap(propagate_version = true)]
+struct Cli {
+    #[clap(subcommand)]
+    command: Commands,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// 現在の変更を記録し、オプションでリモートに保存 (エイリアス: sa)
+    #[clap(alias = "sa")]
+    Save(cmds::SaveArgs),
+    /// ブランチの一覧を状態に応じて色分け表示 (エイリアス: br)
+    #[clap(alias = "br")]
+    Branch(cmds::BranchArgs),
+    /// 既存のブランチに切り替え、またはリモートブランチから新規作成して切り替え (エイリアス: sw)
+    #[clap(alias = "sw")]
+    Switch(cmds::SwitchArgs),
+    /// 指定ブランチを現在のブランチにマージ (エイリアス: me)
+    #[clap(alias = "me")]
+    Merge(cmds::MergeArgs),
+    /// ブランチをローカルにコピーし、オプションでリモートにプッシュ (エイリアス: cp)
+    #[clap(alias = "cp")]
+    Copy(cmds::CopyArgs),
+    /// ローカルおよびオプションでリモートブランチを削除 (エイリアス: del)
+    #[clap(alias = "del")]
+    Delete(cmds::DeleteArgs),
+    /// 新しいローカルブランチを作成し、オプションでリモートにプッシュ (エイリアス: cr)
+    #[clap(alias = "cr")]
+    Create(cmds::CreateArgs),
+    /// ブランチの履歴をツリー形式で表示 (エイリアス: tr)
+    #[clap(alias = "tr")]
+    Tree(cmds::TreeArgs),
+    /// リポジトリ関連の操作 (初期化、作成、削除、リモート設定)
+    Repo(cmds::RepoArgsCli), // cmds.rs で RepoArgsCli とその中のサブコマンドを定義
+    // clap が自動で help サブコマンドを生成するので、自前のものは不要になることが多い
+    // Help,
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Save(args) => cmds::git_save(args)?,
+        Commands::Branch(args) => cmds::git_branch(args)?,
+        Commands::Switch(args) => cmds::git_switch(args)?,
+        Commands::Merge(args) => cmds::git_merge(args)?,
+        Commands::Copy(args) => cmds::git_copy(args)?,
+        Commands::Delete(args) => cmds::git_delete(args)?,
+        Commands::Create(args) => cmds::git_create(args)?,
+        Commands::Tree(args) => cmds::git_tree(args)?,
+        Commands::Repo(args) => cmds::handle_repo_command(args)?,
+    }
+
+    Ok(())
 }
