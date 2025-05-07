@@ -3,7 +3,7 @@
 use std::process::exit;
 use crate::{GitCommand, CommandDefinition, CommandResult}; // main.rs からインポート
 use colored::*; // colored の Colorize トレイトをインポート
-use promptuity::prompts::Input;
+use promptuity::prompts::{Input, Select, SelectOption};
 use promptuity::themes::MinimalTheme;
 use promptuity::{Promptuity, Term};
 
@@ -137,37 +137,81 @@ pub fn git_save(_args: &[String]) {
     println!("{}", "保存処理が完了しました。".green());
 }
 
+
+
+
 pub fn git_setup(_args: &[String]) {
     if !std::path::Path::new(".git").exists() {
         handle_command_result_void(GitCommand::init());
         println!("Gitリポジトリを初期化しました。");
     }
     
-    let mut current_url = String::new();
+    let mut current_url_opt: Option<String> = None;
     match GitCommand::remote_get_url("origin") {
         Ok(url) if !url.is_empty() => {
             println!("現在のリモート 'origin' URL: {}", url.cyan());
-            current_url = url;
+            current_url_opt = Some(url);
         }
         _ => println!("リモート 'origin' は現在設定されていません。"),
     }
 
-    if confirm("リモート 'origin' のURLを設定または変更しますか？") {
-        let new_url = prompt_input("新しいリモートURL (空でスキップ): ");
-        if !new_url.is_empty() {
-            if current_url.is_empty() {
-                handle_command_result_void(GitCommand::remote_add("origin", &new_url));
+    // ユーザーに操作を選択させる
+    let mut term = Term::default();
+    let mut theme = MinimalTheme::default(); // または好みのテーマ
+    let mut p = Promptuity::new(&mut term, &mut theme);
+
+    let options = vec![
+        SelectOption::new("URLを新規追加/変更する", "add_or_set_url"),
+        SelectOption::new("リモート 'origin' を削除する", "remove_url"),
+        SelectOption::new("今回は何もしない", "cancel"),
+    ];
+    
+    let mut select_prompt = Select::new("リモート 'origin' に対する操作を選択してください:", options);
+
+    if let Err(e) = p.begin() { eprintln!("エラー: プロンプト初期化 ({:?})", e); exit(1); }
+    let selected_action = match p.prompt(&mut select_prompt) {
+        Ok(action_id) => action_id,
+        Err(e) => { eprintln!("エラー: 選択肢の取得 ({:?})", e); exit(1); }
+    };
+    if let Err(e) = p.finish() { eprintln!("警告: プロンプト終了処理 ({:?})", e); }
+
+
+    match selected_action.as_ref() {
+        "add_or_set_url" => {
+            let new_url = prompt_input("新しいリモート 'origin' のURLを入力してください: ");
+            if new_url.is_empty() {
+                println!("URLが入力されなかったので、設定/変更は行いませんでした。");
             } else {
-                handle_command_result_void(GitCommand::remote_set_url("origin", &new_url));
+                if current_url_opt.is_none() { // 現在リモートがない場合は追加
+                    handle_command_result_void(GitCommand::remote_add("origin", &new_url));
+                    println!("リモート 'origin' をURL '{}' で追加しました。", new_url.cyan());
+                } else if current_url_opt.as_deref() != Some(&new_url) { // 現在と異なるURLが入力された場合は変更
+                    handle_command_result_void(GitCommand::remote_set_url("origin", &new_url));
+                    println!("リモート 'origin' のURLを '{}' に変更しました。", new_url.cyan());
+                } else { // 現在と同じURLが入力された場合
+                    println!("入力されたURLは現在の設定と同じです。変更はありません。");
+                }
             }
-            println!("リモート 'origin' URLを '{}' に設定/変更しました。", new_url.cyan());
         }
-    } else if !current_url.is_empty() && confirm("リモート 'origin' を削除 (追跡を解除) しますか？") {
-        handle_command_result_void(GitCommand::remote_remove("origin"));
-        println!("リモート 'origin' を削除しました。");
+        "remove_url" => {
+            if current_url_opt.is_some() {
+                if confirm("本当にリモート 'origin' を削除 (追跡を解除) しますか？") {
+                    handle_command_result_void(GitCommand::remote_remove("origin"));
+                    println!("リモート 'origin' を削除しました。");
+                } else {
+                    println!("リモート 'origin' の削除はキャンセルされました。");
+                }
+            } else {
+                println!("削除するリモート 'origin' は設定されていません。");
+            }
+        }
+        "cancel" | _ => { // "cancel" または予期せぬ値
+            println!("リモート 'origin' に関する操作は行いませんでした。");
+        }
     }
     println!("{}", "セットアップ処理を終了します。".green());
 }
+
 
 #[derive(PartialEq, Debug)]
 enum BranchDisplayStatus { Synced, LocalOnly, Ahead, Behind, Diverged }
@@ -392,4 +436,10 @@ pub fn git_create(_args: &[String]) {
         handle_command_result_void(GitCommand::push_u("origin", &name));
         println!("ブランチ '{}' を 'origin/{}' へプッシュし追跡設定しました。", name.cyan(), name.blue());
     }
+}
+
+pub fn git_tree(_args: &[String]) {
+    handle_command_result(GitCommand::show_branch_tree(), |output| {
+        println!("{}", output);
+    });
 }

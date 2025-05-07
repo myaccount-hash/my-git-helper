@@ -2,6 +2,7 @@
 
 use std::process::{Command, Stdio};
 use std::str;
+use colored::*; // colored の Colorize トレイトをインポート
 
 // --- 型定義 ---
 // CommandResult は main.rs で定義し、cmds.rs から crate::CommandResult として参照
@@ -118,25 +119,74 @@ impl GitCommand {
     pub fn merge_base(commit1: &str, commit2: &str) -> CommandResult<String> {
         Self::run_stdout(&["merge-base", commit1, commit2], "git merge-base")
     }
+
+    pub fn show_branch_tree() -> CommandResult<String> {
+        Self::run_stdout(&["show-branch", "--list", "--topo-order"], "git show-branch --list --topo-order")
+    }
 }
 
 // COMMAND_DEFINITIONS は pub const にして、cmds.rs から crate::COMMAND_DEFINITIONS で参照
 pub const COMMAND_DEFINITIONS: &[CommandDefinition] = &[
     CommandDefinition { name: "save", description: "現在の変更を記録し、オプションでリモートに保存します。", handler: cmds::git_save },
+    CommandDefinition { name: "sa", description: "現在の変更を記録し、オプションでリモートに保存します。", handler: cmds::git_save },
+
     CommandDefinition { name: "setup", description: "リポジトリの初期化とリモート('origin')の接続設定を行います。", handler: cmds::git_setup },
+    CommandDefinition { name: "se", description: "リポジトリの初期化とリモート('origin')の接続設定を行います。", handler: cmds::git_setup },
+
     CommandDefinition { name: "branch", description: "ブランチの一覧を状態に応じて色分け表示します。", handler: cmds::git_branch },
+    CommandDefinition { name: "br", description: "ブランチの一覧を状態に応じて色分け表示します。", handler: cmds::git_branch },
+
     CommandDefinition { name: "switch", description: "既存のローカルブランチに切り替えます。", handler: cmds::git_switch },
+    CommandDefinition { name: "sw", description: "既存のローカルブランチに切り替えます。", handler: cmds::git_switch },
+
     CommandDefinition { name: "merge", description: "指定ブランチを現在のブランチにマージします。", handler: cmds::git_merge },
+    CommandDefinition { name: "me", description: "指定ブランチを現在のブランチにマージします。", handler: cmds::git_merge },
+
     CommandDefinition { name: "copy", description: "ブランチをローカルにコピーし、オプションでリモートにプッシュします。", handler: cmds::git_copy },
+    CommandDefinition { name: "cp", description: "ブランチをローカルにコピーし、オプションでリモートにプッシュします。", handler: cmds::git_copy },
+
     CommandDefinition { name: "delete", description: "ローカルおよびオプションでリモートブランチを削除します。", handler: cmds::git_delete },
+    CommandDefinition { name: "del", description: "ローカルおよびオプションでリモートブランチを削除します。", handler: cmds::git_delete },
+
     CommandDefinition { name: "create", description: "新しいローカルブランチを作成し、オプションでリモートにプッシュします。", handler: cmds::git_create },
+    CommandDefinition { name: "cr", description: "新しいローカルブランチを作成し、オプションでリモートにプッシュします。", handler: cmds::git_create },
+
+    CommandDefinition { name: "tree", description: "ブランチの履歴をツリー形式で表示します。", handler: cmds::git_tree },
+    CommandDefinition { name: "tr", description: "ブランチの履歴をツリー形式で表示します。", handler: cmds::git_tree },
+
     CommandDefinition { name: "help", description: "このヘルプメッセージを表示します。", handler: cmds::show_help },
+    CommandDefinition { name: "he", description: "このヘルプメッセージを表示します。", handler: cmds::show_help },
 ];
 
 mod cmds;
 // use cmds::CommandHandler; // CommandHandler は main.rs で pub type となったので不要
 
+
 fn main() {
+    // --- プログラム起動時に一度だけリモート同期を試み、結果を表示 ---
+    // 1. 'origin' リモートが存在するか確認 (エラーは無視し、存在有無だけ取得)
+    let origin_exists = Command::new("git").args(&["remote"])
+        .stdout(Stdio::piped()).stderr(Stdio::null()).output()
+        .map_or(false, |output| {
+            output.status.success() && 
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| line.trim() == "origin")
+        });
+
+    if !origin_exists {
+        println!("{}", "リモート 'origin' は設定されていません (同期スキップ)".blue());
+    } else {
+        // 2. 'origin' があれば fetch を試みる (成否のみ判定し、stdout/stderrは抑制)
+        let fetch_success = Command::new("git").args(&["fetch", "origin", "--prune"])
+            .stdout(Stdio::null()).stderr(Stdio::null()).status()
+            .map_or(false, |status| status.success());
+        
+        if fetch_success {
+            println!("{}", "リモート 'origin' と同期しました。".blue());
+        } else {
+            println!("{}", "リモート 'origin' との同期に失敗しました (オフラインまたは接続の問題の可能性あり)。".blue());
+        }
+    }
+    // --- 同期処理ここまで ---
     let args: Vec<String> = std::env::args().collect();
     let program_name = args.first().map_or("mygit", |s| s.as_str());
 
@@ -157,3 +207,4 @@ fn main() {
     eprintln!("エラー: 不明なコマンド '{}'", command_name);
     cmds::print_usage_and_exit(program_name, COMMAND_DEFINITIONS);
 }
+
