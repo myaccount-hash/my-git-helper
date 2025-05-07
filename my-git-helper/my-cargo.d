@@ -1,0 +1,1 @@
+/Users/shotawake/Programming/my-git-helper/my-git-helper/target/debug/my-cargo: /Users/shotawake/Programming/my-git-helper/my-git-helper/src/cmds.rs /Users/shotawake/Programming/my-git-helper/my-git-helper/src/main.rs /Users/shotawake/Programming/my-git-helper/my-git-helper/src/utils.rs
