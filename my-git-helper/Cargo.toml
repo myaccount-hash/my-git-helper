@@ -1,0 +1,11 @@
+[package]
+name = "my-cargo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+colored = "*"
+dialoguer = { version = "*", features = ["fuzzy-select"] }
+clap = { version = "*", features = ["derive"] }
+anyhow = "*"
+dirs = "*"
